@@ -1,6 +1,5 @@
 import socket
 import requests
-import psutil
 import time
 import platform
 from functools import wraps
